@@ -181,3 +181,154 @@ class SpotifyClient:
                     track_ids.add(track['id'])
         
         return all_tracks
+
+    def get_audio_features(self, track_ids: List[str]) -> Dict[str, Dict[str, Any]]:
+        """
+        Fetch audio features for multiple tracks.
+        
+        Args:
+            track_ids (List[str]): List of Spotify track IDs
+            
+        Returns:
+            Dict[str, Dict[str, Any]]: Mapping of track_id to audio features
+        """
+        features_map = {}
+        
+        # Spotify API allows up to 100 track IDs per request
+        batch_size = 100
+        
+        for i in range(0, len(track_ids), batch_size):
+            batch_ids = track_ids[i:i + batch_size]
+            
+            try:
+                features_response = self.sp.audio_features(batch_ids)
+                
+                for features in features_response:
+                    if features is not None:  # Some tracks may not have audio features
+                        features_map[features['id']] = {
+                            'tempo': features.get('tempo'),
+                            'energy': features.get('energy'),
+                            'danceability': features.get('danceability'),
+                            'valence': features.get('valence'),
+                            'acousticness': features.get('acousticness'),
+                            'instrumentalness': features.get('instrumentalness'),
+                            'loudness': features.get('loudness'),
+                            'speechiness': features.get('speechiness'),
+                            'mode': features.get('mode'),
+                            'key': features.get('key'),
+                            'time_signature': features.get('time_signature')
+                        }
+            except Exception as e:
+                print(f"Error fetching audio features for batch: {e}")
+                continue
+                
+        return features_map
+
+    def get_track_genres(self, track_ids: List[str]) -> Dict[str, List[str]]:
+        """
+        Get genres for tracks by looking up their artists.
+        
+        Args:
+            track_ids (List[str]): List of Spotify track IDs
+            
+        Returns:
+            Dict[str, List[str]]: Mapping of track_id to list of genres
+        """
+        track_genres = {}
+        
+        # Get tracks to extract artist IDs
+        batch_size = 50
+        for i in range(0, len(track_ids), batch_size):
+            batch_ids = track_ids[i:i + batch_size]
+            
+            try:
+                tracks_response = self.sp.tracks(batch_ids)
+                
+                # Collect all unique artist IDs
+                artist_ids = set()
+                track_to_artists = {}
+                
+                for track in tracks_response['tracks']:
+                    if track is not None:
+                        track_id = track['id']
+                        track_artist_ids = [artist['id'] for artist in track['artists']]
+                        track_to_artists[track_id] = track_artist_ids
+                        artist_ids.update(track_artist_ids)
+                
+                # Get artist information in batches
+                artist_genres = {}
+                artist_ids_list = list(artist_ids)
+                
+                for j in range(0, len(artist_ids_list), 50):  # Artists API also has 50 limit
+                    artist_batch = artist_ids_list[j:j + 50]
+                    
+                    try:
+                        artists_response = self.sp.artists(artist_batch)
+                        
+                        for artist in artists_response['artists']:
+                            if artist is not None:
+                                artist_genres[artist['id']] = artist.get('genres', [])
+                    except Exception as e:
+                        print(f"Error fetching artist data: {e}")
+                        continue
+                
+                # Map track IDs to genres
+                for track_id, artist_id_list in track_to_artists.items():
+                    genres = []
+                    for artist_id in artist_id_list:
+                        if artist_id in artist_genres:
+                            genres.extend(artist_genres[artist_id])
+                    
+                    # Remove duplicates while preserving order
+                    unique_genres = []
+                    seen = set()
+                    for genre in genres:
+                        if genre not in seen:
+                            unique_genres.append(genre)
+                            seen.add(genre)
+                    
+                    track_genres[track_id] = unique_genres
+                    
+            except Exception as e:
+                print(f"Error fetching tracks for genre lookup: {e}")
+                continue
+                
+        return track_genres
+
+    def enrich_tracks_with_features(self, tracks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        Enrich track data with audio features and genres.
+        
+        Args:
+            tracks (List[Dict[str, Any]]): List of track dictionaries
+            
+        Returns:
+            List[Dict[str, Any]]: Enriched track data with audio features and genres
+        """
+        if not tracks:
+            return tracks
+            
+        track_ids = [track['id'] for track in tracks]
+        
+        # Get audio features and genres
+        audio_features = self.get_audio_features(track_ids)
+        track_genres = self.get_track_genres(track_ids)
+        
+        # Enrich each track
+        enriched_tracks = []
+        for track in tracks:
+            track_id = track['id']
+            enriched_track = track.copy()
+            
+            # Add audio features
+            if track_id in audio_features:
+                enriched_track['audio_features'] = audio_features[track_id]
+            else:
+                enriched_track['audio_features'] = {}
+            
+            # Add genres
+            enriched_track['genres'] = track_genres.get(track_id, [])
+            
+            enriched_tracks.append(enriched_track)
+            
+        return enriched_tracks
